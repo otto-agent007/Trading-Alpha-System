@@ -1,0 +1,35 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: alpha-ollama
+  #  ports:
+  #   - "11434:11434"
+    volumes:
+     - /mnt/2TBHDD/trading-alpha/ollama-data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+    restart: unless-stopped
+
+  alpha-app:
+    build: .
+    container_name: alpha-app
+    depends_on:
+      - ollama
+    volumes:
+      - /home/user1/Desktop/AlphaVault:/app/obsidian_vault
+      - /mnt/2TBHDD/trading-alpha/data:/app/data
+      - /mnt/2TBHDD/trading-alpha/memory:/app/memory                        #2TB path
+      - /mnt/2TBHDD/trading-alpha/logs:/app/logs
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - MODEL=qwen3.5:4b
+      - OPENROUTER_API_KEY=sk-or-XXXXXXXXXXXXXXXXXXXXXXXX   # ← PUT YOUR KEY HERE
+      - API_FALLBACK_ENABLED=true
+      - OBSIDIAN_VAULT=/app/obsidian_vault
+    mem_limit: 5g
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

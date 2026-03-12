@@ -1,0 +1,16 @@
+pydantic==2.10.*
+chromadb==0.5.*
+sentence-transformers==3.3.*
+pandas
+pyarrow
+httpx
+apscheduler
+ollama
+openai>=1.0.0
+python-dotenv
+plotly
+
+# Archived stock research dependencies (used by backtesting/engine_stocks.py only)
+# vectorbt
+# yfinance
+# instructor[ollama]

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Data & memory (large, machine-specific)
+/data/
+/memory/
+*.parquet
+
+# Obsidian vault runtime files
+obsidian_vault/Alpha Research/Dashboard/matches_*.json
+obsidian_vault/Alpha Research/Dashboard/equity_*.json
+
+# Logs
+logs/
+*.log
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
