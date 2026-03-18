@@ -1,0 +1,24 @@
+# Windows override for docker-compose.yml
+# Usage: docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d
+#
+# This replaces the Linux-specific host bind mounts with:
+#   - Named Docker volumes for data/memory (no host path needed)
+#   - A Windows bind mount for your Obsidian vault (so you can open it in Obsidian)
+#
+# Change the Obsidian vault path below to match your actual vault location.
+
+services:
+  ollama:
+    volumes:
+      - ollama_data:/root/.ollama
+
+  alpha-app:
+    volumes:
+      - alpha_data:/app/data
+      - alpha_memory:/app/memory
+      - C:\Users\bckup\Documents\ObsidianVault:/app/obsidian_vault
+
+volumes:
+  ollama_data:
+  alpha_data:
+  alpha_memory:

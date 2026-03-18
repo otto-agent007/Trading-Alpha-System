@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Test-Path ''C:\\\\Users\\\\bckup\\\\Documents\\\\ObsidianVault\\\\TradingAlphaSystemVault''\")",
+      "Bash(powershell -Command \"git -C ''c:/Users/bckup/Desktop/Trading-Alpha-System'' status\")",
+      "Bash(powershell.exe -NoProfile -Command \"& git -C ''C:\\\\Users\\\\bckup\\\\Desktop\\\\Trading-Alpha-System'' status 2>&1\")",
+      "Bash(cmd /c \"git -C C:\\\\Users\\\\bckup\\\\Desktop\\\\Trading-Alpha-System status\")",
+      "Bash(powershell.exe -Command \"git --version; gh --version\")",
+      "Bash(powershell.exe -NoProfile -Command \"git --version\")",
+      "Bash(powershell.exe -NoProfile -Command \"gh --version\")",
+      "Bash(cmd.exe /c \"git --version && gh --version\")"
+    ]
+  }
+}
