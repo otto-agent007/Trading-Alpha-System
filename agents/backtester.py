@@ -11,9 +11,25 @@ from core.strategy_params import SP
 
 logger = logging.getLogger(__name__)
 
-# Bootstrap continues until we have this many RESOLVED trades in memory.
-# Prevents deadlock: unresolved pending trades no longer block bootstrap mode.
-BOOTSTRAP_RESOLVED_THRESHOLD = 4
+# ---------------------------------------------------------------------------
+# Bootstrap graduation thresholds
+#
+# Instead of a single threshold (old: 4 resolved → full pass), we use a
+# graduated ramp.  Each tier unlocks slightly larger positions and requires
+# slightly more evidence before a full backtest is expected.
+#
+#   Tier 0: 0 resolved episodes   → BLOCK (don't trade blind)
+#   Tier 1: 1-3 resolved episodes → allow, but micro-size (0.5% bankroll)
+#   Tier 2: 4-7 resolved episodes → allow, reduced size (1% bankroll)
+#   Tier 3: 8+ resolved episodes  → full backtest required (normal flow)
+#
+# The strategist reads the "bootstrap_tier" from the details string and
+# scales position size accordingly.
+# ---------------------------------------------------------------------------
+
+BOOTSTRAP_TIER_0_MAX = 0   # 0 resolved → blocked
+BOOTSTRAP_TIER_1_MAX = 3   # 1-3 resolved → micro positions
+BOOTSTRAP_TIER_2_MAX = 7   # 4-7 resolved → reduced positions
 
 
 class Backtester:
@@ -24,6 +40,9 @@ class Backtester:
     entered at the analyst's estimated fair value.
 
     This is the gate: no trade proceeds without a passing backtest.
+
+    Bootstrap mode now uses graduated tiers instead of a blanket auto-pass,
+    and reports the tier so the strategist can scale position sizes.
     """
 
     def __init__(
@@ -50,41 +69,12 @@ class Backtester:
             ep for ep in similar
             if ep.get("outcome") and ep.get("outcome") != "pending"
         ]
+        resolved_count = len(resolved)
 
-        if len(resolved) < SP.bt_min_sample:
-            # Bootstrap mode: auto-pass until we have BOOTSTRAP_RESOLVED_THRESHOLD
-            # *resolved* outcomes in memory. This fixes the deadlock where unresolved
-            # pending trades fill the episode count but never provide useful history.
-            resolved_count = len(resolved)
-            if resolved_count < BOOTSTRAP_RESOLVED_THRESHOLD:
-                logger.info(
-                    f"Backtester: bootstrap mode — only {resolved_count} resolved episodes "
-                    f"(need {BOOTSTRAP_RESOLVED_THRESHOLD} to exit bootstrap), "
-                    f"auto-passing to build history (paper trades only)"
-                )
-                return BacktestResult(
-                    market_id=analysis.market_id,
-                    similar_markets_found=resolved_count,
-                    simulated_win_rate=0.0,
-                    simulated_ev=0.0,
-                    simulated_max_drawdown=0.0,
-                    avg_entry_price=analysis.estimated_fair_value,
-                    passed=True,
-                    details=f"Bootstrap mode: {resolved_count} resolved episodes, building history",
-                )
+        if resolved_count < SP.bt_min_sample:
+            return self._bootstrap_decision(analysis, resolved_count, resolved)
 
-            return BacktestResult(
-                market_id=analysis.market_id,
-                similar_markets_found=resolved_count,
-                simulated_win_rate=0.0,
-                simulated_ev=0.0,
-                simulated_max_drawdown=0.0,
-                avg_entry_price=analysis.estimated_fair_value,
-                passed=False,
-                details=f"Insufficient similar resolved markets: {resolved_count} (need {SP.bt_min_sample})",
-            )
-
-        # Simulate trades on each similar market
+        # Full backtest: simulate trades on each similar market
         results = self._simulate_trades(resolved, analysis)
 
         if not results:
@@ -152,6 +142,114 @@ class Backtester:
 
         logger.info(f"Backtester: {analysis.market_id} → {details}")
         return result
+
+    def _bootstrap_decision(
+        self,
+        analysis: MarketAnalysis,
+        resolved_count: int,
+        resolved: list[dict],
+    ) -> BacktestResult:
+        """Graduated bootstrap: tier determines position sizing.
+
+        Tier 0 (0 resolved):   BLOCK — no trading without any history
+        Tier 1 (1-3 resolved): micro positions, high confidence required
+        Tier 2 (4-7 resolved): reduced positions, run partial validation
+        """
+        # Tier 0: hard block
+        if resolved_count <= BOOTSTRAP_TIER_0_MAX:
+            logger.info(
+                f"Backtester: bootstrap BLOCKED — 0 resolved episodes in memory. "
+                f"Run 'python scripts/seed_memory.py' to populate history."
+            )
+            return BacktestResult(
+                market_id=analysis.market_id,
+                similar_markets_found=0,
+                simulated_win_rate=0.0,
+                simulated_ev=0.0,
+                simulated_max_drawdown=0.0,
+                avg_entry_price=analysis.estimated_fair_value,
+                passed=False,
+                details=(
+                    "Bootstrap BLOCKED: 0 resolved episodes. "
+                    "Seed memory with scripts/seed_memory.py first."
+                ),
+            )
+
+        # Tier 1: micro positions
+        if resolved_count <= BOOTSTRAP_TIER_1_MAX:
+            # Run whatever validation we can with the few episodes we have
+            partial_results = self._simulate_trades(resolved, analysis)
+            partial_wr = 0.0
+            partial_ev = 0.0
+            if partial_results:
+                wins = sum(1 for r in partial_results if r["pnl"] > 0)
+                partial_wr = wins / len(partial_results)
+                partial_ev = sum(r["pnl"] for r in partial_results) / len(partial_results)
+
+            logger.info(
+                f"Backtester: bootstrap tier 1 — {resolved_count} resolved episodes, "
+                f"micro-size allowed (partial wr={partial_wr:.0%}, ev={partial_ev:.3f})"
+            )
+            return BacktestResult(
+                market_id=analysis.market_id,
+                similar_markets_found=resolved_count,
+                simulated_win_rate=partial_wr,
+                simulated_ev=partial_ev,
+                simulated_max_drawdown=0.0,
+                avg_entry_price=analysis.estimated_fair_value,
+                passed=True,
+                details=(
+                    f"Bootstrap tier 1: {resolved_count} resolved episodes, "
+                    f"micro-size (0.5% max). partial_wr={partial_wr:.0%}"
+                ),
+            )
+
+        # Tier 2: reduced positions
+        partial_results = self._simulate_trades(resolved, analysis)
+        partial_wr = 0.0
+        partial_ev = 0.0
+        if partial_results:
+            wins = sum(1 for r in partial_results if r["pnl"] > 0)
+            partial_wr = wins / len(partial_results)
+            partial_ev = sum(r["pnl"] for r in partial_results) / len(partial_results)
+
+        # Tier 2 has a soft gate: if partial evidence is strongly negative, block
+        if partial_results and partial_ev < -0.10:
+            logger.info(
+                f"Backtester: bootstrap tier 2 BLOCKED — partial evidence strongly negative "
+                f"(ev={partial_ev:.3f}, n={resolved_count})"
+            )
+            return BacktestResult(
+                market_id=analysis.market_id,
+                similar_markets_found=resolved_count,
+                simulated_win_rate=partial_wr,
+                simulated_ev=partial_ev,
+                simulated_max_drawdown=0.0,
+                avg_entry_price=analysis.estimated_fair_value,
+                passed=False,
+                details=(
+                    f"Bootstrap tier 2 BLOCKED: partial evidence negative "
+                    f"(ev={partial_ev:.3f}, n={resolved_count})"
+                ),
+            )
+
+        logger.info(
+            f"Backtester: bootstrap tier 2 — {resolved_count} resolved episodes, "
+            f"reduced-size allowed (partial wr={partial_wr:.0%}, ev={partial_ev:.3f})"
+        )
+        return BacktestResult(
+            market_id=analysis.market_id,
+            similar_markets_found=resolved_count,
+            simulated_win_rate=partial_wr,
+            simulated_ev=partial_ev,
+            simulated_max_drawdown=0.0,
+            avg_entry_price=analysis.estimated_fair_value,
+            passed=True,
+            details=(
+                f"Bootstrap tier 2: {resolved_count} resolved episodes, "
+                f"reduced-size (1% max). partial_wr={partial_wr:.0%}"
+            ),
+        )
 
     def _simulate_trades(
         self,

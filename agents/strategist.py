@@ -10,6 +10,12 @@ from core.strategy_params import SP
 
 logger = logging.getLogger(__name__)
 
+# Bootstrap position limits per tier (fraction of bankroll)
+_BOOTSTRAP_LIMITS = {
+    1: 0.005,   # tier 1: 0.5% = $5 on $1000 bankroll
+    2: 0.010,   # tier 2: 1.0% = $10 on $1000 bankroll
+}
+
 
 class Strategist:
     """Decides whether to trade based on analysis + backtest results.
@@ -56,6 +62,19 @@ class Strategist:
                 f"a {analysis.current_price:.3f}-priced market (max_edge={SP.max_edge})",
             )
 
+        # Bootstrap tier detection — graduated position limits
+        bootstrap_tier = self._detect_bootstrap_tier(backtest)
+        if bootstrap_tier is not None:
+            # Bootstrap trades require higher confidence to compensate for
+            # thin validation data
+            bootstrap_min_confidence = 0.55  # vs normal 0.40
+            if analysis.confidence < bootstrap_min_confidence:
+                return self._pass_decision(
+                    analysis, backtest,
+                    f"Bootstrap tier {bootstrap_tier}: confidence {analysis.confidence:.2f} "
+                    f"below bootstrap minimum {bootstrap_min_confidence}",
+                )
+
         # Check exposure limits
         exposure = self._working.total_exposure()
         max_size = self._working.bankroll * SP.max_position_pct
@@ -66,13 +85,18 @@ class Strategist:
             )
 
         # Kelly criterion (mechanical)
-        is_bootstrap = "Bootstrap mode" in backtest.details
-        if is_bootstrap:
-            kelly_fraction = SP.max_position_pct * SP.kelly_fraction
+        if bootstrap_tier is not None:
+            # Bootstrap: use fixed small fraction, not Kelly
+            kelly_fraction = _BOOTSTRAP_LIMITS.get(bootstrap_tier, 0.005)
+            logger.info(
+                f"Strategist: bootstrap tier {bootstrap_tier} → "
+                f"position capped at {kelly_fraction:.1%} of bankroll"
+            )
         else:
             kelly_fraction = self._kelly(
                 backtest.simulated_win_rate, analysis.estimated_fair_value
             )
+
         size_usd = min(kelly_fraction * self._working.bankroll, max_size, available)
 
         # Reduce size if overallocated in this category (Track 7 portfolio targets)
@@ -105,8 +129,9 @@ class Strategist:
         )
 
         # Build reasoning mechanically — no LLM call needed.
+        tier_tag = f" [bootstrap-t{bootstrap_tier}]" if bootstrap_tier else ""
         reasoning = (
-            f"{action.upper()} @ {target_price:.3f} | "
+            f"{action.upper()} @ {target_price:.3f}{tier_tag} | "
             f"edge={analysis.edge:+.3f}, conf={analysis.confidence:.2f}, "
             f"bt_ev={backtest.simulated_ev:.4f}, bt_wr={backtest.simulated_win_rate:.2%}, "
             f"n={backtest.similar_markets_found}. "
@@ -131,6 +156,19 @@ class Strategist:
             f"@ {target_price:.3f} (${size_usd:.2f}, kelly={kelly_fraction:.3f})"
         )
         return decision
+
+    @staticmethod
+    def _detect_bootstrap_tier(backtest: BacktestResult) -> int | None:
+        """Extract bootstrap tier from backtest details, or None if fully validated."""
+        details = backtest.details
+        if "Bootstrap tier 1" in details:
+            return 1
+        if "Bootstrap tier 2" in details:
+            return 2
+        # Legacy format from old backtester
+        if "Bootstrap mode" in details:
+            return 1
+        return None
 
     def _kelly(self, win_rate: float, entry_price: float) -> float:
         """Quarter-Kelly for binary bet. Capped at SP.max_position_pct."""

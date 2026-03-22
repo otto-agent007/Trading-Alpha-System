@@ -107,15 +107,11 @@ Three-tier memory architecture:
 
 - **`scanner.py`** — Fetches markets from both platforms, classifies via light LLM, checks semantic memory for pattern matches, adds to watchlist. Filters: volume, days-to-close, price range.
 - **`analyst.py`** — Deep-dives into a watchlisted market: fetches orderbook + price history + trades, queries episodic + semantic memory, asks heavy LLM for fair value estimate. Produces `MarketAnalysis`.
-- **`backtester.py`** — Validation gate. Finds similar resolved markets via episodic memory, simulates entry at analyst's estimated fair value. Gate: sample≥8, EV>2%, win_rate>50%, max_drawdown<40%.
+- **`backtester.py`** — Validation gate. Finds similar resolved markets via episodic memory, simulates trades at analyst's estimated fair value. Full gate (8+ samples): EV>2%, win_rate>50%, max_drawdown<40%. Bootstrap mode uses graduated tiers: tier 0 (0 episodes) blocks; tier 1 (1–3) allows micro positions (0.5%); tier 2 (4–7) allows reduced positions (1%).
 - **`strategist.py`** — Trade decision with quarter-Kelly sizing. Checks edge, confidence, exposure limits. Reasoning is built mechanically (no LLM call). Produces `TradeDecision`.
 - **`executor.py`** — Paper execution: records position in working memory, logs to episodic memory. Live execution: Phase 5.
 - **`reviewer.py`** — Daily: checks positions for resolution, calculates PnL, triggers consolidation.
 - **`obsidian.py`** — Writes Markdown with YAML frontmatter for Dataview, Quarto `.qmd` reports, Excalidraw portfolio maps.
-
-### Archived (`backtesting/`)
-
-- **`engine_stocks.py`** — Original vectorbt/SPY EMA crossover engine. Not used.
 
 ### Research Factory Findings (from Linux box)
 
@@ -140,7 +136,7 @@ are synced to `DATA_PATH/linux_shared/` and read by the trading system via
 
 - **Tiered LLM**: Heavy tasks (analysis, learning) → OpenRouter. Light tasks (classification, extraction) → local Ollama. Never use the heavy model for simple classification.
 - **ChromaDB metadata**: must be flat primitives (str, int, float, bool). `episodic.record()` explicitly casts all fields.
-- **Backtest gate**: No trade proceeds without a passing backtest. The backtester uses actual price timeseries, not just resolution outcomes.
+- **Backtest gate**: No trade proceeds without a passing backtest. The backtester simulates trades against resolved market outcomes (not live price history) from episodic memory.
 - **Kelly sizing**: Always quarter-Kelly, capped at `MAX_POSITION_PCT` (5%).
 - **Obsidian plugins**: All vault files use consistent YAML frontmatter for Dataview. Excalidraw `.excalidraw.md` files are valid JSON.
 - **No tests** currently exist. Verification is via the one-liner commands above.
@@ -161,15 +157,11 @@ are synced to `DATA_PATH/linux_shared/` and read by the trading system via
 
 - Analyst is systematically overconfident on mid-range markets
 - Consolidation was broken (`update_confidence` never had valid IDs) — fixed
-- Bootstrap mode trades are essentially random — seed episodic memory first
-- Backtester uses outcome counting, not price history — fundamental limitation
+- Bootstrap tier 0 (0 resolved episodes) hard-blocks all trades — run `scripts/seed_memory.py` first
+- Backtester simulates trades at analyst's fair value against resolved outcomes (not live price history — outcomes are the signal)
 
 ## External Data Sources (planned)
 
 - Metaculus API: crowd probabilities as analyst "second opinion"
 - Brier.fyi PostgREST API: cross-platform linked markets for arbitrage
 - Manifold API: 440K+ resolved markets for backtest seeding
-
-## Calibration Findings
-
-[Update this section as autoresearch reveals patterns]

@@ -16,7 +16,7 @@ services:
     volumes:
       - alpha_data:/app/data
       - alpha_memory:/app/memory
-      - C:\Users\bckup\Documents\ObsidianVault:/app/obsidian_vault
+      - C:\path\to\your\ObsidianVault:/app/obsidian_vault
 
 volumes:
   ollama_data:
