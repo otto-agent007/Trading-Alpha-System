@@ -54,6 +54,7 @@ class MarketAnalysis(BaseModel):
     market_id: str
     platform: str
     question: str
+    category: str = "other"
     current_price: float
     estimated_fair_value: float
     edge: float  # fair_value - current_price
@@ -97,6 +98,7 @@ class Position(BaseModel):
     market_id: str
     platform: str
     question: str
+    category: str = "other"
     direction: Literal["yes", "no"]
     entry_price: float
     size_usd: float

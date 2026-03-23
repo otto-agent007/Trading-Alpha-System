@@ -231,6 +231,7 @@ class Analyst:
             market_id=market.id,
             platform=market.platform,
             question=market.question,
+            category=market.category,
             current_price=current_yes_price,
             estimated_fair_value=fair_value,
             edge=edge,

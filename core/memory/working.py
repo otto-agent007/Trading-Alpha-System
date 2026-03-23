@@ -135,6 +135,7 @@ class WorkingMemory(BaseModel):
                 market_id=decision.market_id,
                 platform=market.platform,
                 question=market.question,
+                category=market.category,
                 direction=direction,
                 entry_price=decision.target_price,
                 size_usd=decision.size_usd,

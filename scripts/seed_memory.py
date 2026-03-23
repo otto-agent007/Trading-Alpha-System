@@ -87,18 +87,24 @@ def parse_polymarket(m: dict) -> dict | None:
     if not outcome:
         return None  # skip ambiguous resolutions
 
-    market_id = m.get("condition_id") or m.get("conditionId") or m.get("id", "")
+    market_id = m.get("condition_id") or m.get("conditionId") or m.get("id") or m.get("market_id", "")
     category = (m.get("category") or "other").lower().strip()
-    volume = float(m.get("volume") or m.get("volume_num") or 0)
+    volume = float(m.get("volume") or m.get("volume_num") or m.get("volume_usd") or 0)
 
     # Extract closing price for richer episode data
-    outcome_prices = m.get("outcomePrices") or m.get("outcome_prices") or []
     close_price = None
-    if len(outcome_prices) >= 1:
+    if m.get("close_price") is not None:
         try:
-            close_price = float(outcome_prices[0])
+            close_price = float(m["close_price"])
         except (ValueError, TypeError):
             pass
+    if close_price is None:
+        outcome_prices = m.get("outcomePrices") or m.get("outcome_prices") or []
+        if len(outcome_prices) >= 1:
+            try:
+                close_price = float(outcome_prices[0])
+            except (ValueError, TypeError):
+                pass
 
     return {
         "market_id": market_id,
@@ -178,6 +184,19 @@ def parse_manifold(m: dict) -> dict | None:
 
 def parse_market(m: dict) -> dict | None:
     """Auto-detect format and parse a resolved market."""
+    # Shortcut: already-normalized seed episode (has market_id + outcome in Yes/No form)
+    if m.get("market_id") and m.get("outcome") in ("Yes", "No"):
+        return {
+            "market_id": str(m["market_id"]),
+            "platform": (m.get("platform") or "polymarket").lower(),
+            "question": m.get("question", ""),
+            "category": (m.get("category") or "other").lower().strip(),
+            "outcome": m["outcome"],
+            "volume_usd": float(m.get("volume_usd") or m.get("volume") or 0),
+            "close_price": float(m["close_price"]) if m.get("close_price") is not None else None,
+            "source": m.get("source", "seed"),
+        }
+
     # Detect by platform field if present
     platform = (m.get("platform") or "").lower()
     if platform == "metaculus":
