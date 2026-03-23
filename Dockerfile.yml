@@ -1,0 +1,26 @@
+# Use a lightweight Python base image
+FROM python:3.11-slim
+
+# Stop Python from buffering stdout so we can see print statements in real-time
+ENV PYTHONUNBUFFERED=1
+
+# Create a working directory
+WORKDIR /app
+
+# Install dependencies first (leverages Docker cache)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the core engine files into the container
+COPY fetch_data.py lse_quant_engine.py ./
+
+# SECURITY: Create a non-root user named "sandbox" 
+# This prevents the AI from having admin privileges over the container OS
+RUN useradd -m sandbox && \
+    chown -R sandbox:sandbox /app
+
+# Switch to the non-root user
+USER sandbox
+
+# Run the engine
+CMD ["python", "lse_quant_engine.py"]
