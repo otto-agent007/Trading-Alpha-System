@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  ouroboros-quant:
+    build: .
+    container_name: ouroboros_engine
+    environment:
+      # This pulls the API key from your host machine's environment variables
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      # Maps the container's /app directory to your current folder.
+      # This allows the AI to write the log file directly to your desktop.
+      - ./:/app
+    restart: unless-stopped
+    # Caps the CPU and Memory so a bad AI loop doesn't crash your host machine
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
