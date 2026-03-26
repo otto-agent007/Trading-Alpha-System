@@ -35,6 +35,10 @@ _DEFAULTS: dict = {
     "price_ceiling": 0.97,
     "suspicious_edge": 0.30,
     "confidence_cap_on_suspicious": 0.45,
+    # Confidence shrinkage for mid-range markets (0.35-0.65 YES price).
+    # Analyst is systematically overconfident in this zone — 0.80 means
+    # "apply a 20% discount to the LLM's stated confidence".
+    "mid_range_confidence_shrink": 0.80,
 }
 
 
@@ -55,6 +59,7 @@ class StrategyParams:
     price_ceiling: float
     suspicious_edge: float
     confidence_cap_on_suspicious: float
+    mid_range_confidence_shrink: float
 
     def __str__(self) -> str:
         lines = [f"  {k}: {v}" for k, v in self.__dict__.items()]

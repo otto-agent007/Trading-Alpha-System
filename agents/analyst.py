@@ -139,6 +139,10 @@ class Analyst:
 
         current_yes_price = market.current_prices.get("Yes", 0.5)
 
+        # Crowd opinion anchor from linux_handoff (crowd_opinions.json populated by Linux box).
+        # Falls back to MetaculusClient live search if no cached entry for this market.
+        crowd_section = self._build_crowd_section(market)
+
         # Build list sections before the f-string (can't use \n inside f-string expressions)
         past_markets_text = "\n".join(past_market_summaries) if past_market_summaries else "None found"
         patterns_text = "\n".join(pattern_summaries) if pattern_summaries else "None learned yet"
@@ -168,8 +172,9 @@ class Analyst:
             f"**Current YES price:** {current_yes_price:.3f}\n"
             f"**Volume:** ${market.volume_usd:,.0f}\n"
             f"**Orderbook:** {ob_summary}\n"
-            f"**Price trend:** {price_summary}\n\n"
-            f"**Similar past markets:**\n"
+            f"**Price trend:** {price_summary}\n"
+            f"{crowd_section}"
+            f"\n**Similar past markets:**\n"
             f"{past_markets_text}\n\n"
             f"**Known patterns for this category:**\n"
             f"{patterns_text}\n\n"
@@ -216,6 +221,31 @@ class Analyst:
 
         edge = fair_value - current_yes_price
 
+        # Mid-range confidence shrinkage — analyst is systematically overconfident on
+        # markets priced 0.35–0.65. Apply a shrink factor before any other cap.
+        if 0.35 <= current_yes_price <= 0.65:
+            shrunk = confidence * SP.mid_range_confidence_shrink
+            logger.info(
+                f"Analyst: mid-range market ({current_yes_price:.3f}) — shrinking confidence "
+                f"{confidence:.2f} → {shrunk:.2f}"
+            )
+            confidence = shrunk
+
+        # Data-driven calibration corrections from Linux box Track 1.
+        # Calibration file format: {"mid_range_0.35_0.65": {"factor": 0.75}, ...}
+        calibration = LINUX.get_calibration()
+        if calibration:
+            for key, correction in calibration.items():
+                if isinstance(correction, dict) and "factor" in correction:
+                    try:
+                        parts = key.split("_")
+                        if len(parts) >= 4 and parts[0] == "mid" and parts[1] == "range":
+                            low, high = float(parts[2]), float(parts[3])
+                            if low <= current_yes_price <= high:
+                                confidence *= float(correction["factor"])
+                    except (ValueError, IndexError):
+                        pass
+
         # Sanity check: large edge claimed against a liquid mid-range market is suspicious.
         # The current market price reflects collective intelligence — a 30+ cent deviation
         # usually signals model confusion, not genuine alpha.
@@ -248,6 +278,40 @@ class Analyst:
         )
 
         return analysis
+
+    def _build_crowd_section(self, market) -> str:
+        """Return a crowd-opinion prompt section, or empty string if unavailable.
+
+        Checks crowd_opinions.json first (populated by Linux box). Falls back to
+        a live Metaculus search if no cached entry exists.
+        """
+        crowd_prob: float | None = None
+
+        # Primary: linux_shared/crowd_opinions.json
+        opinions = LINUX.get_crowd_opinions()
+        raw = opinions.get(market.id)
+        if raw is not None:
+            try:
+                crowd_prob = float(raw)
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback: live Metaculus search (adds ~0.5s)
+        if crowd_prob is None:
+            try:
+                from clients.metaculus import MetaculusClient
+                crowd_prob = MetaculusClient().get_crowd_probability(market.question)
+            except Exception:
+                pass
+
+        if crowd_prob is None:
+            return ""
+
+        return (
+            f"\n**Crowd consensus (Metaculus/Manifold):** {crowd_prob:.3f}\n"
+            f"If your fair_value estimate differs from the crowd by more than 0.15, "
+            f"explain specifically why in your reasoning.\n"
+        )
 
     @staticmethod
     def _safe_call(fn, *args, **kwargs):

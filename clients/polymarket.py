@@ -173,22 +173,107 @@ class PolymarketClient(MarketClient):
         return df
 
     # ------------------------------------------------------------------
+    # Live order placement (Phase 3 — requires POLYMARKET_PRIVATE_KEY)
+    # ------------------------------------------------------------------
+
+    def place_order(
+        self,
+        market_id: str,
+        side: str,
+        token_type: str,
+        price: float,
+        size_usd: float,
+    ) -> dict | None:
+        """Place a GTC limit order on the Polymarket CLOB.
+
+        Requires the ``py-clob-client`` package and POLYMARKET_PRIVATE_KEY env var.
+        Returns the CLOB API response dict on success, None on failure.
+
+        Args:
+            market_id:  Polymarket condition ID.
+            side:       "BUY" or "SELL".
+            token_type: "yes" or "no" — which outcome token to trade.
+            price:      Limit price (0.0–1.0).
+            size_usd:   Notional USD amount to spend (converted to shares internally).
+        """
+        from config import POLYMARKET_PRIVATE_KEY
+
+        if not POLYMARKET_PRIVATE_KEY:
+            logger.error("place_order: POLYMARKET_PRIVATE_KEY not set — cannot place live order")
+            return None
+
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiCreds, OrderArgs, PartialCreateOrderOptions
+            from py_clob_client.constants import POLYGON
+        except ImportError:
+            logger.error(
+                "place_order: py-clob-client not installed. "
+                "Run: pip install py-clob-client"
+            )
+            return None
+
+        try:
+            # Resolve the correct token ID for the requested outcome
+            token_id = self._resolve_token(market_id, token_type)
+            if not token_id:
+                logger.error(f"place_order: could not resolve {token_type} token for {market_id}")
+                return None
+
+            # Convert USD amount to shares: shares = size_usd / price
+            shares = round(size_usd / price, 2) if price > 0 else 0
+            if shares <= 0:
+                logger.error(f"place_order: computed zero shares for size={size_usd}, price={price}")
+                return None
+
+            clob = ClobClient(
+                host=CLOB_BASE,
+                key=POLYMARKET_PRIVATE_KEY,
+                chain_id=POLYGON,
+            )
+            # Derive session credentials from the private key
+            clob.set_api_creds(clob.derive_api_key())
+
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=round(price, 4),
+                size=shares,
+                side=side,
+            )
+            signed_order = clob.create_order(order_args)
+            resp = clob.post_order(signed_order, PartialCreateOrderOptions(tick_size=0.01))
+            logger.info(f"place_order: {side} {shares:.2f} shares of {token_type} @ {price:.4f} → {resp}")
+            return resp
+
+        except Exception as e:
+            logger.error(f"place_order failed for {market_id}: {e}", exc_info=True)
+            return None
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _resolve_yes_token(self, market_id: str) -> str | None:
-        """Look up the YES outcome token ID for a market."""
+    def _resolve_token(self, market_id: str, token_type: str) -> str | None:
+        """Look up the YES or NO outcome token ID for a market."""
         try:
             data = self._get(f"{CLOB_BASE}/markets/{market_id}")
             tokens = data.get("tokens", [])
             for tok in tokens:
-                if tok.get("outcome", "").lower() == "yes":
+                if tok.get("outcome", "").lower() == token_type.lower():
                     return tok.get("token_id")
-            # fallback: return first token
-            return tokens[0]["token_id"] if tokens else None
-        except Exception as e:
-            logger.warning(f"Could not resolve YES token for {market_id}: {e}")
+            # Fallback: YES=index 0, NO=index 1
+            if token_type.lower() == "yes" and tokens:
+                return tokens[0].get("token_id")
+            if token_type.lower() == "no" and len(tokens) > 1:
+                return tokens[1].get("token_id")
             return None
+        except Exception as e:
+            logger.warning(f"Could not resolve {token_type} token for {market_id}: {e}")
+            return None
+
+    def _resolve_yes_token(self, market_id: str) -> str | None:
+        """Look up the YES outcome token ID for a market (delegates to _resolve_token)."""
+        return self._resolve_token(market_id, "yes")
 
     @staticmethod
     def _parse_gamma_market(m: dict) -> Market:
