@@ -49,10 +49,54 @@ class Scanner:
             for kw in WATCH_KEYWORDS
         ]
         self._skip_cats: set[str] = set()  # populated from human feedback at run time
+        # Dynamic filter overrides from Track 5 (set each scan cycle)
+        self._dynamic_min_vol: int | None = None
+        self._dynamic_price_floor: float | None = None
+        self._dynamic_price_ceiling: float | None = None
 
     def run(self) -> dict:
         """Scan all platforms. Returns scan statistics dict."""
         existing_ids = {w.market_id for w in self._working.watchlist}
+
+        # Arbitrage alerts from price monitor — highest-priority discovery (score 0.99)
+        arb_added = 0
+        for alert in LINUX.get_arbitrage_alerts():
+            mid = alert.get("market_id")
+            if not mid or mid in existing_ids:
+                continue
+            from core.models import WatchlistItem as _WI
+            from datetime import datetime as _dt, timezone as _tz
+            self._working.watchlist.append(_WI(
+                market_id=mid,
+                platform=alert.get("platform", "polymarket"),
+                question=alert.get("question", mid),
+                category=alert.get("category", "other"),
+                added_at=_dt.now(_tz.utc),
+                reason=f"arbitrage_alert (edge={alert.get('edge_pct', '?')})",
+                pattern_match_score=0.99,
+            ))
+            existing_ids.add(mid)
+            arb_added += 1
+            logger.info(f"Scanner: arbitrage alert queued — {mid} (edge={alert.get('edge_pct', '?')})")
+        if arb_added:
+            logger.info(f"Scanner: {arb_added} arbitrage markets added to watchlist")
+
+        # Track 5: research-optimal scanner filters — override SP defaults for this cycle
+        filters = LINUX.get_optimal_scanner_filters()
+        if filters:
+            self._dynamic_min_vol = filters.get("min_vol")
+            self._dynamic_price_floor = filters.get("price_floor")
+            self._dynamic_price_ceiling = filters.get("price_ceiling")
+            logger.info(
+                f"Scanner: Track 5 filters active — "
+                f"min_vol={self._dynamic_min_vol}, "
+                f"price_floor={self._dynamic_price_floor}, "
+                f"price_ceiling={self._dynamic_price_ceiling}"
+            )
+        else:
+            self._dynamic_min_vol = None
+            self._dynamic_price_floor = None
+            self._dynamic_price_ceiling = None
 
         # Human feedback — category skips and forced analyses
         feedback = LINUX.get_human_feedback()
@@ -159,8 +203,32 @@ class Scanner:
                     f"Scanner: keyword '{kw}' matched at pos {match.start()} "
                     f"in full question: {market.question!r}"
                 )
-                return f"Keyword match: \"{kw}\"", 0.7
+                return f"Keyword match: \"{kw}\"", 0.7 + self._entry_timing_boost(market)
         return None
+
+    def _entry_timing_boost(self, market: Market) -> float:
+        """Return +0.2 score boost if market is at the research-optimal entry window.
+
+        Uses Track 4 findings (entry_timing_findings.json). Returns 0 if no data or
+        market is outside the ±10% window around the optimal entry fraction.
+        """
+        if not market.close_date:
+            return 0.0
+        optimal_pct = LINUX.get_optimal_entry_timing(market.category)
+        if optimal_pct is None:
+            return 0.0
+        now = datetime.now(timezone.utc)
+        days_left = (market.close_date - now).days
+        if days_left <= 0:
+            return 0.0
+        # Approximate fraction of market life elapsed.
+        # We don't know the market's open date, so use max_days_to_close as a proxy for
+        # total span — the fraction is (total - remaining) / total.
+        estimated_total = max(float(SP.max_days_to_close), float(days_left))
+        current_life_pct = 1.0 - (days_left / estimated_total)
+        if abs(current_life_pct - optimal_pct) <= 0.10:
+            return 0.2
+        return 0.0
 
     def _is_alive(self, market: Market) -> bool:
         """Lightweight liveness check: status, close date, year reference, and price extremes.
@@ -191,12 +259,16 @@ class Scanner:
         return True
 
     def _passes_basic_filters(self, market: Market) -> bool:
-        """Quick filters: liveness, volume, time horizon, price range."""
+        """Quick filters: liveness, volume, time horizon, price range.
+
+        Uses Track 5 research-optimal overrides when available, falls back to SP defaults.
+        """
         if not self._is_alive(market):
             return False
         if market.category in self._skip_cats:
             return False
-        if market.volume_usd < SP.min_volume_usd:
+        min_vol = self._dynamic_min_vol if self._dynamic_min_vol is not None else SP.min_volume_usd
+        if market.volume_usd < min_vol:
             return False
         if market.close_date:
             now = datetime.now(timezone.utc)
@@ -205,7 +277,9 @@ class Scanner:
                 return False
         # Skip markets at extreme prices (likely already resolved)
         yes_price = market.current_prices.get("Yes", 0.5)
-        if yes_price < SP.price_floor or yes_price > SP.price_ceiling:
+        price_floor = self._dynamic_price_floor if self._dynamic_price_floor is not None else SP.price_floor
+        price_ceiling = self._dynamic_price_ceiling if self._dynamic_price_ceiling is not None else SP.price_ceiling
+        if yes_price < price_floor or yes_price > price_ceiling:
             return False
         return True
 
@@ -224,14 +298,17 @@ class Scanner:
                 conf = float(best.get("confidence", 0))
                 if conf > 0.5:
                     reason = f"Pattern match ({conf:.0%}): {best.get('pattern', '')[:80]}"
-                    return reason, conf
+                    return reason, min(1.0, conf + self._entry_timing_boost(market))
         except Exception as e:
             logger.debug(f"Semantic memory query failed: {e}")
 
         # ── Tier 3: High-volume mid-range heuristic ──
         yes_price = market.current_prices.get("Yes", 0.5)
         if market.volume_usd > 50_000 and 0.20 < yes_price < 0.80:
-            return f"High volume (${market.volume_usd:,.0f}) mid-range price", 0.3
+            return (
+                f"High volume (${market.volume_usd:,.0f}) mid-range price",
+                0.3 + self._entry_timing_boost(market),
+            )
 
         # ── Tier 4: LLM classification (optional, if Ollama is available) ──
         try:
@@ -247,7 +324,10 @@ class Scanner:
                 best = max(patterns, key=lambda p: float(p.get("confidence", 0)))
                 conf = float(best.get("confidence", 0))
                 if conf > 0.4:
-                    return f"LLM+pattern ({category}, {conf:.0%})", conf
+                    return (
+                        f"LLM+pattern ({category}, {conf:.0%})",
+                        min(1.0, conf + self._entry_timing_boost(market)),
+                    )
         except Exception:
             # Ollama not available — that's fine, tiers 1-3 handle discovery
             pass

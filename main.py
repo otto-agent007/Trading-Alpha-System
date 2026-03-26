@@ -22,9 +22,11 @@ from config import (
     REVIEW_HOUR_UTC,
     SCAN_INTERVAL_HOURS,
 )
+from core.linux_handoff import LINUX
 from core.memory.episodic import EpisodicMemory
 from core.memory.semantic import SemanticMemory
 from core.memory.working import WorkingMemory
+from core.models import WatchlistItem
 from core.router import ModelRouter
 
 logging.basicConfig(
@@ -74,6 +76,39 @@ def scan_task() -> None:
         )
     except Exception as e:
         logger.error(f"Scan cycle failed: {e}", exc_info=True)
+
+    # Fast alerts — time-sensitive triggers from the news sentinel (linux box Track 6).
+    # These bypass the normal scan cycle and queue markets for immediate analysis.
+    try:
+        alerts = LINUX.get_fast_alerts()
+        if alerts:
+            existing_ids = {w.market_id for w in working.watchlist}
+            open_ids = {p.market_id for p in working.open_positions()}
+            fast_added = 0
+            for alert in alerts:
+                mid = alert.get("market_id")
+                if not mid or mid in existing_ids or mid in open_ids:
+                    continue
+                working.watchlist.append(WatchlistItem(
+                    market_id=mid,
+                    platform=alert.get("platform", "polymarket"),
+                    question=alert.get("question", mid),
+                    category=alert.get("category", "other"),
+                    added_at=datetime.now(timezone.utc),
+                    reason="fast_alert",
+                    pattern_match_score=0.95,  # near top of queue
+                ))
+                existing_ids.add(mid)
+                fast_added += 1
+                logger.info(f"Fast alert: queued {mid} for immediate analysis")
+            if fast_added:
+                working.save()
+                logger.info(
+                    f"Fast alerts: {fast_added} new markets queued, triggering immediate analysis"
+                )
+                analysis_task()
+    except Exception as e:
+        logger.error(f"Fast alert processing failed: {e}", exc_info=True)
 
 
 def analysis_task() -> None:
@@ -126,6 +161,7 @@ def review_task() -> None:
     """Review loop — check outcomes, extract learnings, write dashboard."""
     logger.info(f"[{datetime.now(timezone.utc).isoformat()}] Review cycle started")
     try:
+        working.reset_daily_tracking()  # reset circuit breaker + daily loss baseline
         stats = reviewer.run()
         obsidian.write_daily_review(stats)
         obsidian.write_patterns()

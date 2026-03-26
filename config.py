@@ -22,9 +22,15 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")  # optional — Gemini Embedding
 
 # ---------------------------------------------------------------------------
-# Platform API keys (read-only for now; trading in Phase 5)
+# Platform API keys
 # ---------------------------------------------------------------------------
 POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "")
+# Live trading credentials — leave blank to stay in paper mode.
+# POLYMARKET_PRIVATE_KEY: EVM private key (hex, with or without 0x prefix).
+# POLYMARKET_ADDRESS: EVM wallet address corresponding to the private key.
+# Also requires PAPER_MODE=false and working.live_mode_enabled=True.
+POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")
+POLYMARKET_ADDRESS = os.getenv("POLYMARKET_ADDRESS", "")
 KALSHI_API_KEY = os.getenv("KALSHI_API_KEY", "")
 KALSHI_API_SECRET = os.getenv("KALSHI_API_SECRET", "")
 

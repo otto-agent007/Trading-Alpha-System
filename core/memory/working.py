@@ -36,6 +36,14 @@ class WorkingMemory(BaseModel):
     last_analysis: datetime | None = None
     bankroll: float = 1000.0
 
+    # Live trading safety controls.
+    # live_mode_enabled must be explicitly set to True — never auto-enables.
+    live_mode_enabled: bool = False
+    # circuit_breaker_triggered auto-sets on >10% daily loss; resets at 03:00 UTC review.
+    circuit_breaker_triggered: bool = False
+    # Bankroll snapshot at the start of each UTC day (set by reset_daily_tracking).
+    daily_loss_start: float = 0.0
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -179,3 +187,34 @@ class WorkingMemory(BaseModel):
 
     def total_exposure(self) -> float:
         return sum(p.size_usd for p in self.open_positions())
+
+    # ------------------------------------------------------------------
+    # Live trading safety controls
+    # ------------------------------------------------------------------
+
+    def check_circuit_breaker(self) -> bool:
+        """Return True if live trading should be blocked.
+
+        Checks both the explicit flag and the daily loss limit (10%).
+        Auto-triggers and saves if the loss threshold is crossed.
+        """
+        if self.circuit_breaker_triggered:
+            return True
+        if self.daily_loss_start > 0:
+            loss_pct = (self.bankroll - self.daily_loss_start) / self.daily_loss_start
+            if loss_pct < -0.10:
+                self.circuit_breaker_triggered = True
+                logger.warning(
+                    f"Circuit breaker TRIGGERED: bankroll dropped {loss_pct:.1%} today "
+                    f"(${self.bankroll:.2f} vs start ${self.daily_loss_start:.2f})"
+                )
+                self.save()
+                return True
+        return False
+
+    def reset_daily_tracking(self) -> None:
+        """Reset daily loss baseline and circuit breaker. Call at start of each review cycle."""
+        self.daily_loss_start = self.bankroll
+        self.circuit_breaker_triggered = False
+        self.save()
+        logger.info(f"Daily tracking reset — loss baseline: ${self.daily_loss_start:.2f}")

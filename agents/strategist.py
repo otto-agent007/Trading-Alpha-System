@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from config import PAPER_MODE
 from core.linux_handoff import LINUX
 from core.memory.working import WorkingMemory
 from core.models import BacktestResult, MarketAnalysis, TradeDecision
@@ -148,7 +149,7 @@ class Strategist:
             reasoning=reasoning,
             backtest_ev=backtest.simulated_ev,
             backtest_sample=backtest.similar_markets_found,
-            paper_only=True,  # always paper for now
+            paper_only=PAPER_MODE,  # False enables live execution (requires live_mode_enabled + no circuit breaker)
         )
 
         logger.info(

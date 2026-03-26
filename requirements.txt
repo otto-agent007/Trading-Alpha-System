@@ -19,3 +19,8 @@ python-dotenv
 
 # Visualisation
 plotly
+
+# Live trading (Polymarket CLOB order signing) — optional, required for PAPER_MODE=false
+# py-clob-client handles EVM key management and CLOB API auth
+py-clob-client
+eth-account
